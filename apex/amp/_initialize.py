@@ -1,11 +1,27 @@
-import torch
-from torch._six import string_classes
-import functools
-import numpy as np
+# Copyright (c) 2020, Huawei Technologies.
+# Copyright (c) 2019, NVIDIA CORPORATION.
+# All rights reserved.
+#
+# Licensed under the BSD 3-Clause License  (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# https://opensource.org/licenses/BSD-3-Clause
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import sys
 from types import MethodType
+import functools
+import torch
+import torch.distributed as dist
+import numpy as np
 import warnings
-from ._amp_state import _amp_state, warn_or_err, container_abcs
+from ._amp_state import _amp_state, warn_or_err, container_abcs, maybe_print
 from .handle import disable_casts
 from .scaler import LossScaler
 from ._process_optimizer import _process_optimizer
@@ -18,11 +34,38 @@ if torch.distributed.is_available():
     from ..parallel.LARC import LARC
 
 
+def zero_grad(self, set_to_none: bool = False) -> None:
+    r"""Patch for torch.nn.Module.zero_grad. For combined grad or NPU fused optimizers,
+    set_to_none must be False.
+
+    Args:
+        set_to_none (bool): instead of setting to zero, set the grads to None.
+            See :meth:`torch.optim.Optimizer.zero_grad` for details.
+    """
+
+    assert set_to_none is False, "For combined grad, `set_to_none` must be False."
+
+    if getattr(self, '_is_replica', False):
+        warnings.warn(
+            "Calling .zero_grad() from a module created with nn.DataParallel() has no effect. "
+            "The parameters are copied (in a differentiable manner) from the original module. "
+            "This means they are not leaf nodes in autograd and so don't accumulate gradients. "
+            "If you need gradients in your forward method, consider using autograd.grad instead.")
+
+    for p in self.parameters():
+        if p.grad is not None:
+            if p.grad.grad_fn is not None:
+                p.grad.detach_()
+            else:
+                p.grad.requires_grad_(False)
+            p.grad.zero_()
+
+
 def to_type(dtype, t):
     if isinstance(t, torch.Tensor):
-        if not t.is_cuda:
+        if not 'npu' in t.type():
             # This should not be a hard error, since it may be legitimate.
-            warnings.warn("An input tensor was not cuda.")
+            warnings.warn("An input tensor was not npu.")
         # GANs require this.
         # if t.requires_grad:
         #     warn_or_err("input data requires grad.  Since input data is not a model parameter,\n"
@@ -39,7 +82,7 @@ def to_type(dtype, t):
 def applier(value, fn):
     if isinstance(value, torch.Tensor):
         return fn(value)
-    elif isinstance(value, string_classes):
+    elif isinstance(value, str):
         return value
     elif isinstance(value, np.ndarray):
         return value
@@ -81,15 +124,15 @@ def check_params_fp32(models):
         for name, param in model.named_parameters():
             if param.is_floating_point():
                 if 'Half' in param.type():
-                    warn_or_err("Found param {} with type {}, expected torch.cuda.FloatTensor.\n"
+                    warn_or_err("Found param {} with type {}, expected torch.npu.FloatTensor.\n"
                         "When using amp.initialize, you do not need to call .half() on your model\n"
                         "before passing it, no matter what optimization level you choose.".format(
                         name, param.type()))
-                elif not param.is_cuda:
-                    warn_or_err("Found param {} with type {}, expected torch.cuda.FloatTensor.\n"
+                elif not 'npu' in param.type():
+                    warn_or_err("Found param {} with type {}, expected torch.npu.FloatTensor.\n"
                         "When using amp.initialize, you need to provide a model with parameters\n"
-                        "located on a CUDA device before passing it no matter what optimization level\n"
-                        "you chose. Use model.to('cuda') to use the default device.".format(
+                        "located on a Npu device before passing it no matter what optimization level\n"
+                        "you chose. Use model.to('npu') to use the default device.".format(
                         name, param.type()))
 
         # Backward compatibility for PyTorch 0.4
@@ -104,15 +147,15 @@ def check_params_fp32(models):
                 name, buf = obj, buf_iter[obj]
             if buf.is_floating_point():
                 if 'Half' in buf.type():
-                    warn_or_err("Found buffer {} with type {}, expected torch.cuda.FloatTensor.\n"
+                    warn_or_err("Found buffer {} with type {}, expected torch.npu.FloatTensor.\n"
                         "When using amp.initialize, you do not need to call .half() on your model\n"
                         "before passing it, no matter what optimization level you choose.".format(
                         name, buf.type()))
-                elif not buf.is_cuda:
-                    warn_or_err("Found buffer {} with type {}, expected torch.cuda.FloatTensor.\n"
+                elif not 'npu' in buf.type():
+                    warn_or_err("Found buffer {} with type {}, expected torch.npu.FloatTensor.\n"
                         "When using amp.initialize, you need to provide a model with buffers\n"
-                        "located on a CUDA device before passing it no matter what optimization level\n"
-                        "you chose. Use model.to('cuda') to use the default device.".format(
+                        "located on a Npu device before passing it no matter what optimization level\n"
+                        "you chose. Use model.to('npu') to use the default device.".format(
                         name, buf.type()))
 
 
@@ -227,12 +270,18 @@ def _initialize(models, optimizers, properties, num_losses=1, cast_model_outputs
     _amp_state.loss_scalers = []
     for _ in range(num_losses):
         _amp_state.loss_scalers.append(LossScaler(properties.loss_scale,
+                                                  init_scale=_amp_state.dynamic_init_scale,
+                                                  scale_growth_factor=_amp_state.scale_growth_factor,
+                                                  scale_backoff_factor=_amp_state.scale_backoff_factor,
+                                                  scale_window=_amp_state.scale_window,
                                                   min_loss_scale=_amp_state.min_loss_scale,
                                                   max_loss_scale=_amp_state.max_loss_scale))
 
     if properties.patch_torch_functions:
         # handle is unused here. It's accessible later through a global value anyway.
-        handle = amp_init(loss_scale=properties.loss_scale, verbose=(_amp_state.verbosity == 2))
+        handle = amp_init(loss_scale=properties.loss_scale,
+                          verbose=(_amp_state.verbosity == 2),
+                          user_cast_preferred=properties.user_cast_preferred)
         for optimizer in optimizers:
             # Disable Amp casting for the optimizer step, because it should only be
             # applied to FP32 master params anyway.
@@ -244,6 +293,24 @@ def _initialize(models, optimizers, properties, num_losses=1, cast_model_outputs
                 return new_step
 
             optimizer.step = MethodType(patch_step(optimizer.step), optimizer)
+
+
+    is_npu_fused_optimizer = False
+    for optimizer in optimizers:
+        if hasattr(optimizer, 'is_npu_fused_optimizer') and optimizer.is_npu_fused_optimizer:
+            is_npu_fused_optimizer = True
+            break
+    if properties.combine_grad or is_npu_fused_optimizer:
+        torch.nn.Module.zero_grad = zero_grad
+        maybe_print(
+            "Warning: "
+            "Default value of `set_to_none` in torch.nn.Module.zero_grad() is set as False for combine grad, "
+            "which is True since torch 2.0.")
+
+    if properties.combine_ddp:
+        for model in models:
+            for name, param in model.named_parameters():
+                dist.broadcast(param, 0)
 
     if optimizers_was_list:
         if models_was_list:

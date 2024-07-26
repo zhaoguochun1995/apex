@@ -37,8 +37,6 @@ class FusedAdagrad(torch.optim.Optimizer):
         adagrad_w_mode (boolean, optional): Apply L2 regularization or weight decay
             True for decoupled weight decay (also known as AdamW) (default: False)
 
-    .. _Adaptive Subgradient Methods for Online Learning and Stochastic
-        Optimization: http://jmlr.org/papers/v12/duchi11a.html
     """
     def __init__(self, params, lr=1e-2, eps=1e-10,
                  weight_decay=0., set_grad_none=True, adagrad_w_mode=False):

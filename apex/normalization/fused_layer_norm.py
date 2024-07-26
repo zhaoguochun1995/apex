@@ -1,3 +1,19 @@
+# Copyright (c) 2023, Huawei Technologies.
+# Copyright (c) 2019, NVIDIA CORPORATION.
+# All rights reserved.
+#
+# Licensed under the BSD 3-Clause License  (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# https://opensource.org/licenses/BSD-3-Clause
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import math
 import torch
 import numbers
@@ -130,7 +146,7 @@ class FusedLayerNorm(torch.nn.Module):
         super(FusedLayerNorm, self).__init__()
 
         global fused_layer_norm_cuda
-        fused_layer_norm_cuda = importlib.import_module("fused_layer_norm_cuda")
+        fused_layer_norm_cuda = None
 
         if isinstance(normalized_shape, numbers.Integral):
             normalized_shape = (normalized_shape,)
@@ -151,9 +167,10 @@ class FusedLayerNorm(torch.nn.Module):
             init.zeros_(self.bias)
 
     def forward(self, input):
-        if not input.is_cuda:
-            return  F.layer_norm(
-                input, self.normalized_shape, self.weight, self.bias, self.eps)
+        if not input.is_cuda or fused_layer_norm_cuda is None:
+            with torch.autocast(device_type='npu', enabled=False):
+                return  F.layer_norm(
+                    input, self.normalized_shape, self.weight, self.bias, self.eps)
         if self.elementwise_affine:
           return FusedLayerNormAffineFunction.apply(
               input, self.weight, self.bias, self.normalized_shape,self.eps)

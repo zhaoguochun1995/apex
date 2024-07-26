@@ -1,3 +1,19 @@
+# Copyright (c) 2020, Huawei Technologies.
+# Copyright (c) 2019, NVIDIA CORPORATION.
+# All rights reserved.
+#
+# Licensed under the BSD 3-Clause License  (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# https://opensource.org/licenses/BSD-3-Clause
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import unittest
 
 import itertools as it
@@ -7,11 +23,17 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from utils import common_init, HALF, FLOAT, DTYPES
+from utils import common_init, HALF, FLOAT, DTYPES,\
+    generate_data
+import utils
+import sys
+sys.path.append('../')
+import device
 
 class TestPromotion(unittest.TestCase):
     def setUp(self):
         self.handle = amp.init(enabled=True)
+        self.device = device.CALCULATE_DEVICE
         common_init(self)
 
     def tearDown(self):
@@ -20,12 +42,13 @@ class TestPromotion(unittest.TestCase):
     def run_binary_promote_test(self, fns, input_shape, x_inplace=False):
         type_pairs = it.product(DTYPES, DTYPES)
         for fn, (xtype, ytype) in it.product(fns, type_pairs):
-            x = torch.randn(input_shape, dtype=xtype).requires_grad_()
+            x = generate_data(0, 10, input_shape, xtype).requires_grad_()
             x_leaf = x
             if x_inplace:
                 # We need a non-leaf to call in place on
                 x = x.clone()
-            y = torch.randn(input_shape, dtype=ytype)
+            y = generate_data(0, 10, input_shape, dtype=ytype).to(self.device)
+            x = x.to(self.device)
             out = fn(x, y)
             if x_inplace:
                 # In place: always match xtype
@@ -33,9 +56,9 @@ class TestPromotion(unittest.TestCase):
             else:
                 # Out of place: match widest type
                 if xtype == torch.float or ytype == torch.float:
-                    self.assertEqual(out.type(), FLOAT)
+                    self.assertEqual(out.type(), utils.FLOAT)
                 else:
-                    self.assertEqual(out.type(), HALF)
+                    self.assertEqual(out.type(), utils.HALF)
             out.float().sum().backward()
             self.assertEqual(x_leaf.grad.dtype, xtype)
 
@@ -51,19 +74,19 @@ class TestPromotion(unittest.TestCase):
 
     def test_cat_matches_widest(self):
         shape = self.b
-        ys = [torch.randn(shape, dtype=torch.half) for _ in range(5)]
-        x_float = torch.randn(shape)
+        ys = [generate_data(0, 10, shape, dtype=torch.half).to(self.device) for _ in range(5)]
+        x_float = generate_data(0, 10, shape, dtype=torch.float).to(self.device)
         out = torch.cat(ys + [x_float])
-        self.assertEqual(out.type(), FLOAT)
-        x_half = torch.randn(shape, dtype=torch.half)
+        self.assertEqual(out.type(), utils.FLOAT)
+        x_half = generate_data(0, 10, shape, dtype=torch.half).to(self.device)
         out = torch.cat(ys + [x_half])
-        self.assertEqual(out.type(), HALF)
+        self.assertEqual(out.type(), utils.HALF)
 
     def test_inplace_exp_is_error_for_half(self):
-        xs = torch.randn(self.b)
+        xs = generate_data(0, 10, self.b, dtype=torch.float).to(self.device)
         xs.exp_()
-        self.assertEqual(xs.type(), FLOAT)
-        xs = torch.randn(self.b, dtype=torch.half)
+        self.assertEqual(xs.type(), utils.FLOAT)
+        xs = generate_data(0, 10, self.b, dtype=torch.half).to(self.device)
         with self.assertRaises(NotImplementedError):
             xs.exp_()
 

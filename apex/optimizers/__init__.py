@@ -3,3 +3,13 @@ from .fused_adam import FusedAdam
 from .fused_novograd import FusedNovoGrad
 from .fused_lamb import FusedLAMB
 from .fused_adagrad import FusedAdagrad
+from .npu_fused_sgd import NpuFusedSGD
+from .npu_fused_adam import NpuFusedAdam
+from .npu_fused_bert_adam import NpuFusedBertAdam
+from .npu_fused_adadelta import NpuFusedAdadelta
+from .npu_fused_lamb import NpuFusedLamb
+from .lamb import Lamb
+from .npu_fused_adamw import NpuFusedAdamW
+from .npu_fused_adamp import NpuFusedAdamP
+from .npu_fused_rmsprop import NpuFusedRMSprop
+from .npu_fused_rmsprop_tf import NpuFusedRMSpropTF

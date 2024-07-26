@@ -65,7 +65,14 @@ def register_promote_function(module, name):
 
 
 # Top-level function to insert _all_ the hooks.
-def init(enabled=True, loss_scale="dynamic", enable_caching=True, verbose=False, allow_banned=False):
+def init(
+    enabled=True,
+    loss_scale="dynamic",
+    enable_caching=True,
+    verbose=False,
+    allow_banned=False,
+    user_cast_preferred=None):
+
     global _DECORATOR_HANDLE
 
     if not enabled:
@@ -76,7 +83,10 @@ def init(enabled=True, loss_scale="dynamic", enable_caching=True, verbose=False,
     handle = AmpHandle(loss_scale, enable_caching, verbose)
 
     # 0) Force-{fp16, fp32} for user-annotated functions
+    _user_cast_registry = set()
     for mod, fn, cast_fn in _USER_CAST_REGISTRY:
+        if user_cast_preferred:
+            _user_cast_registry.add((mod, fn))
         try_caching = (cast_fn == utils.maybe_half)
         wrap.cached_cast(mod, fn, cast_fn, handle,
                          try_caching, verbose)
@@ -96,6 +106,8 @@ def init(enabled=True, loss_scale="dynamic", enable_caching=True, verbose=False,
     for module, (list_name, cast_fn) in itertools.product(override_modules,
                                                           cast_table):
         for fn in getattr(module, list_name):
+            if user_cast_preferred and (module.MODULE, fn) in _user_cast_registry:
+                continue
             try_caching = (cast_fn == utils.maybe_half)
             wrap.cached_cast(module.MODULE, fn, cast_fn, handle,
                              try_caching, verbose)

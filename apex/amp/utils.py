@@ -1,3 +1,19 @@
+# Copyright (c) 2020, Huawei Technologies.
+# Copyright (c) 2019, NVIDIA CORPORATION.
+# All rights reserved.
+#
+# Licensed under the BSD 3-Clause License  (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# https://opensource.org/licenses/BSD-3-Clause
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from . import compat
 
 import functools
@@ -55,7 +71,7 @@ def maybe_half(x, name='', verbose=False):
     if is_nested(x):
         return type(x)([maybe_half(y) for y in x])
 
-    if not x.is_cuda or type_string(x) == 'HalfTensor':
+    if not 'npu' in x.type()  or type_string(x) == 'HalfTensor':
         return x
     else:
         if verbose:
@@ -66,7 +82,7 @@ def maybe_float(x, name='', verbose=False):
     if is_nested(x):
         return type(x)([maybe_float(y) for y in x])
 
-    if not x.is_cuda or type_string(x) == 'FloatTensor':
+    if not 'npu' in x.type() or type_string(x) == 'FloatTensor':
         return x
     else:
         if verbose:
@@ -94,7 +110,7 @@ def cached_cast(cast_fn, x, cache):
         cached_x = cache[x]
         if x.requires_grad and cached_x.requires_grad:
             # Make sure x is actually cached_x's autograd parent.
-            if cached_x.grad_fn.next_functions[1][0].variable is not x:
+            if cached_x.grad_fn.next_functions[0][0].variable is not x:
                 raise RuntimeError("x and cache[x] both require grad, but x is not "
                                    "cache[x]'s parent.  This is likely an error.")
         # During eval, it's possible to end up caching casted weights with

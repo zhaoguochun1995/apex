@@ -1,3 +1,19 @@
+# Copyright (c) 2020, Huawei Technologies.
+# Copyright (c) 2019, NVIDIA CORPORATION.
+# All rights reserved.
+#
+# Licensed under the BSD 3-Clause License  (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# https://opensource.org/licenses/BSD-3-Clause
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import unittest
 
 import functools as ft
@@ -9,16 +25,20 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.nn import Parameter
+import numpy as np
 
-from utils import common_init, HALF, FLOAT,\
-    ALWAYS_HALF, ALWAYS_FLOAT, MATCH_INPUT
+from utils import common_init
+import sys
+sys.path.append('../')
+import device
 
 class MyModel(torch.nn.Module):
     def __init__(self, unique):
         super(MyModel, self).__init__()
         self.weight0 = Parameter(unique +
-            torch.arange(2, device='cuda', dtype=torch.float32))
-        self.weight1 = Parameter(1. + unique + torch.arange(2, device='cuda', dtype=torch.float16))
+            torch.from_numpy(np.arange(2, dtype=np.float32)))
+        self.weight1 = Parameter(1. + unique +
+            torch.from_numpy(np.arange(2, dtype=np.float16)).to(device.CALCULATE_DEVICE ))
 
     @staticmethod
     def ops(input, weight0, weight1):
@@ -33,7 +53,8 @@ class MyModel(torch.nn.Module):
 
 class TestAddParamGroup(unittest.TestCase):
     def setUp(self):
-        self.x = torch.ones((2), device='cuda', dtype=torch.float32)
+        self.device = device.CALCULATE_DEVICE
+        self.x = torch.ones((2), device=self.device, dtype=torch.float32)
         common_init(self)
 
     def tearDown(self):
@@ -54,8 +75,8 @@ class TestAddParamGroup(unittest.TestCase):
         for opt_level in ("O0", "O1", "O2", "O3"):
           for zero_before_add in (True, False):
             for try_accumulation in (True, False):
-              model0 = MyModel(1)
-              model1 = MyModel(2)
+              model0 = MyModel(1).to(self.device)
+              model1 = MyModel(2).to(self.device)
 
               optimizer = torch.optim.SGD([{'params' : model0.parameters(), 'lr' : 0.25}],
                                           momentum=0.125)
@@ -89,8 +110,8 @@ class TestAddParamGroup(unittest.TestCase):
                                  [param.data.clone() for param in model1.parameters()]
 
               for how_to_zero in "none", "model", "optimizer":
-                  model0 = MyModel(1)
-                  model1 = MyModel(2)
+                  model0 = MyModel(1).to(self.device)
+                  model1 = MyModel(2).to(self.device)
 
                   optimizer = torch.optim.SGD([{'params' : model0.parameters(), 'lr' : 0.25}],
                                               momentum=0.125)
@@ -139,7 +160,8 @@ class TestAddParamGroup(unittest.TestCase):
                                  [param.data.clone() for param in model1.parameters()]
 
                   for reference, final in zip(reference_params, final_params):
-                      self.assertTrue(torch.allclose(reference.to(final.dtype), final),
+                      final = final.to(torch.float32)
+                      self.assertTrue(torch.allclose(reference.to(final.dtype).to('cpu'), final.to('cpu')),
                                       "opt_level = {}, how_to_zero = {}, zero_before_add = {}".format(
                                       opt_level, how_to_zero, zero_before_add))
 

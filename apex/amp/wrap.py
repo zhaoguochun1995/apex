@@ -249,7 +249,7 @@ def new_rnn_cast(fn, handle, verbose=False):
 
         new_args = []
         for i, arg in enumerate(args):
-            if i == params_idx:
+            if i == params_idx and torch.cuda.is_available():
                 num_params = sum([x.numel() for x in arg])
                 fp16_weight_buf = args[0].new_empty((num_params,),
                                                     dtype=torch.half)

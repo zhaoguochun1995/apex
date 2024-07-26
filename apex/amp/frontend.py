@@ -19,6 +19,11 @@ class Properties(object):
             "keep_batchnorm_fp32" : None,
             "master_weights" : None,
             "loss_scale" : 1.0,
+            "combine_grad": None,
+            "combine_ddp": None,
+            "ddp_replica_count": 4,
+            "check_combined_tensors": None,
+            "user_cast_preferred":None,
             # Reserved for future functionality
             # "fused_optimizer" : False,
             # "enable_ddp_interop" : False,
@@ -91,6 +96,20 @@ class Properties(object):
                         self.options[name] = value
                     else:
                         self.options[name] = float(value)
+                elif name == "combine_grad" or name == "check_combined_tensors":
+                    if self.opt_level not in ["O1", "O2"] and value:
+                        warn_or_err("Currently, combine_grad=True or check_combined_tensors=True should only be set "
+                                    "by selecting opt_level='O1' or opt_level='O2'.")
+                    self.options[name] = value
+                elif name == "combine_ddp":
+                    if not self.combine_grad:
+                        warn_or_err("Combine_grad should be True when combine_ddp using.. \n")
+                    self.options[name] = value
+                elif name == "user_cast_preferred":
+                    if self.opt_level != "O1" and value:
+                        warn_or_err("Currently, user_cast_preferred=True should only be set by "
+                                    "selecting opt_level='O1'.")
+                    self.options[name] = value
                 else:
                     self.options[name] = value
         else:
@@ -161,6 +180,7 @@ class O1:
         properties.keep_batchnorm_fp32 = None
         properties.master_weights = None
         properties.loss_scale = "dynamic"
+        properties.combine_grad = None
         # properties.fused_optimizer = False
         # properties.enable_ddp_interop = False
         return properties # modified in place so this isn't really necessary
@@ -205,8 +225,17 @@ def initialize(
     cast_model_outputs=None,
     num_losses=1,
     verbosity=1,
+    dynamic_init_scale=2.**16,
+    scale_growth_factor=2.,
+    scale_backoff_factor=0.5,
+    scale_window=2000,
     min_loss_scale=None,
-    max_loss_scale=2.**24
+    max_loss_scale=2.**24,
+    combine_grad=None,
+    combine_ddp=None,
+    ddp_replica_count=4,
+    user_cast_preferred=None,
+    check_combined_tensors=None
     ):
     """
     Initialize your models, optimizers, and the Torch tensor and functional namespace according to the
@@ -254,11 +283,32 @@ def initialize(
             support multiple losses/backward passes, but use a single global loss scale
             for all of them.
         verbosity (int, default=1):  Set to 0 to suppress Amp-related output.
+        dynamic_init_scale (float, optional, default=2.**16):  Initial dynamic loss scale factor.
+        scale_growth_factor (float, optional, default=2.0):  Factor by which the scale is multiplied
+            if no overflow occurs for ``scale_window`` consecutive iterations.
+            If dynamic loss scaling is not used, `scale_growth_factor` is ignored.
+        scale_backoff_factor (float, optional, default=0.5):  Factor by which the scale is multiplied
+            if overflow occurs in an iteration. If dynamic loss scaling is not used, `scale_backoff_factor` is ignored.
+        scale_window (int, optional, default=2000):  Number of consecutive iterations without overflow
+            that must occur for the scale to be multiplied by ``scale_growth_factor``.
+            If dynamic loss scaling is not used, `scale_window` is ignored.
         min_loss_scale (float, default=None):  Sets a floor for the loss scale values that can be chosen by dynamic
             loss scaling.  The default value of None means that no floor is imposed.
             If dynamic loss scaling is not used, `min_loss_scale` is ignored.
         max_loss_scale (float, default=2.**24):  Sets a ceiling for the loss scale values that can be chosen by
             dynamic loss scaling.  If dynamic loss scaling is not used, `max_loss_scale` is ignored.
+        combine_grad (bool, optional, default=None): If True, make gradients fused for unscale.
+        combine_ddp (bool, optional, default=None): If True, use combined gradients for data exchange,
+            accelerate multi-card training, and functionally replace DistributedDataParallel.
+        ddp_replica_count (bool, optional, default=4): Set the number of replicas of combined gradients.
+            Theoretically, the more replicas, the higher the degree of parallelism, but the time-consuming
+            distribution operation itself will lead to a decrease in performance even though the degree
+            of parallelism is improved. Therefore, we limit and optimize the replica size for data exchange.
+            The final number of replicas is not necessarily exactly the same as the set number
+        user_cast_preferred (bool, optional, default=None): If True in O1, user cast registry is preferred
+            rather than fp16 white- / black-list, to avoid redundant dtype cast.
+        check_combined_tensors (bool, optional, default=None): If True, check if the combined grads and combined params
+            are valid during training
 
     Returns:
         Model(s) and optimizer(s) modified according to the ``opt_level``.
@@ -306,6 +356,7 @@ def initialize(
         https://github.com/NVIDIA/apex/issues
     """
     _amp_state.opt_properties = Properties()
+    # Here add a switch to open combine tensor
     _amp_state.verbosity = verbosity
 
     if not enabled:
@@ -330,6 +381,10 @@ def initialize(
         for k, v in _amp_state.opt_properties.options.items():
             maybe_print("{:22} : {}".format(k, v), True)
 
+    _amp_state.dynamic_init_scale = dynamic_init_scale
+    _amp_state.scale_growth_factor = scale_growth_factor
+    _amp_state.scale_backoff_factor = scale_backoff_factor
+    _amp_state.scale_window = scale_window
     _amp_state.min_loss_scale = min_loss_scale
     _amp_state.max_loss_scale = max_loss_scale
 
@@ -350,6 +405,16 @@ def initialize(
         _amp_state.opt_properties.master_weights = master_weights
     if loss_scale is not None:
         _amp_state.opt_properties.loss_scale = loss_scale
+    if combine_grad is not None:
+        _amp_state.opt_properties.combine_grad = combine_grad
+    if combine_ddp is not None:
+        _amp_state.opt_properties.combine_ddp = combine_ddp
+    if ddp_replica_count is not None:
+        _amp_state.opt_properties.ddp_replica_count = ddp_replica_count
+    if user_cast_preferred is not None:
+        _amp_state.opt_properties.user_cast_preferred = user_cast_preferred
+    if check_combined_tensors is not None:
+        _amp_state.opt_properties.check_combined_tensors = check_combined_tensors
 
     maybe_print("After processing overrides, optimization options are:", True)
     for k, v in _amp_state.opt_properties.options.items():

@@ -1,3 +1,19 @@
+# Copyright (c) 2020, Huawei Technologies.
+# Copyright (c) 2019, NVIDIA CORPORATION.
+# All rights reserved.
+#
+# Licensed under the BSD 3-Clause License  (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# https://opensource.org/licenses/BSD-3-Clause
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import unittest
 
 import functools as ft
@@ -8,9 +24,16 @@ from apex.amp import _amp_state
 import torch
 from torch import nn
 import torch.nn.functional as F
+import numpy as np
+import sys
+sys.path.append('../')
+import device
+import utils
 
 from utils import common_init, HALF, FLOAT,\
-    ALWAYS_HALF, ALWAYS_FLOAT, MATCH_INPUT
+    ALWAYS_HALF, ALWAYS_FLOAT, MATCH_INPUT,\
+    generate_data
+    
 
 def get_reference_grad(i, w, ops):
     # Creating new tensors ensures, among other things, that the new tensors are not in the cache.
@@ -24,7 +47,8 @@ def get_reference_grad(i, w, ops):
 class WhitelistModule(torch.nn.Module):
     def __init__(self, dtype):
         super(WhitelistModule, self).__init__()
-        self.weight = torch.nn.Parameter(torch.arange(8*8, device='cuda', dtype=dtype).view(8,8))
+        weight_parameter = torch.from_numpy(np.arange(8*8, dtype=dtype)).view(8,8).to(device.CALCULATE_DEVICE)
+        self.weight = torch.nn.Parameter(weight_parameter)
 
     @staticmethod
     def ops(input, weight):
@@ -37,7 +61,8 @@ class WhitelistModule(torch.nn.Module):
 class BlacklistModule(torch.nn.Module):
     def __init__(self, dtype):
         super(BlacklistModule, self).__init__()
-        self.weight = torch.nn.Parameter(torch.arange(2*8, device='cuda', dtype=dtype).view(2,8))
+        weight_parameter = torch.from_numpy(np.arange(2*8, dtype=dtype)).view(2,8).to(device.CALCULATE_DEVICE)
+        self.weight = torch.nn.Parameter(weight_parameter)
 
     @staticmethod
     def ops(input, weight):
@@ -50,7 +75,8 @@ class BlacklistModule(torch.nn.Module):
 class PromoteModule(torch.nn.Module):
     def __init__(self, dtype):
         super(PromoteModule, self).__init__()
-        self.weight = torch.nn.Parameter(torch.arange(2*8, device='cuda', dtype=dtype).view(2,8))
+        weight_parameter = torch.from_numpy(np.arange(2*8, dtype=dtype)).view(2,8).to(device.CALCULATE_DEVICE)
+        self.weight = torch.nn.Parameter(weight_parameter)
 
     @staticmethod
     def ops(input, weight):
@@ -61,14 +87,14 @@ class PromoteModule(torch.nn.Module):
 
 class TestCache(unittest.TestCase):
     def setUp(self):
-        self.x = torch.ones((2, 8), device='cuda', dtype=torch.float32)
+        self.x = torch.ones((2, 8), dtype=torch.float32).to(device.CALCULATE_DEVICE)
         common_init(self)
 
     def tearDown(self):
         pass
 
     def train_eval_train_test(self, module, t):
-        model = module(t).cuda()
+        model = module(t).to(device.CALCULATE_DEVICE)
         optimizer = torch.optim.SGD(model.parameters(), lr=1.0)
 
         _amp_state.allow_incoming_model_not_fp32 = True
@@ -91,10 +117,10 @@ class TestCache(unittest.TestCase):
         
             # Currently there's no difference in the allclose calls, so no need for branching,
             # but I'm keeping this in case we want different tolerances for fp16 and fp32 checks. 
-            if model.weight.grad.type() == "torch.cuda.HalfTensor":
-                self.assertTrue(torch.allclose(model.weight.grad.float(), reference_grad))
-            elif model.weight.grad.type() == "torch.cuda.FloatTensor":
-                self.assertTrue(torch.allclose(model.weight.grad.float(), reference_grad))
+            if model.weight.grad.type() == utils.HALF:
+                self.assertTrue(torch.allclose(model.weight.grad.float().to('cpu'), reference_grad.to('cpu')))
+            elif model.weight.grad.type() == utils.FLOAT:
+                self.assertTrue(torch.allclose(model.weight.grad.float().to('cpu'), reference_grad.to('cpu')))
             else:
                 raise RuntimeError("model.weight.grad.type = {}".format(model.weight.grad.type()))
 
@@ -115,22 +141,25 @@ class TestCache(unittest.TestCase):
     # I could easily have these as a set of for loops in a single test,
     # instead of going for granularity.
     def test_whitelist_module_fp16_weight(self):
-        self.train_eval_train_test(WhitelistModule, torch.float16)
+        self.train_eval_train_test(WhitelistModule, np.float16)
+
 
     def test_whitelist_module_fp32_weight(self):
-        self.train_eval_train_test(WhitelistModule, torch.float32)
+        self.train_eval_train_test(WhitelistModule, np.float32)
+
 
     def test_blacklist_module_fp16_weight(self):
-        self.train_eval_train_test(BlacklistModule, torch.float16)
+        self.train_eval_train_test(BlacklistModule, np.float16)
+
 
     def test_blacklist_module_fp32_weight(self):
-        self.train_eval_train_test(BlacklistModule, torch.float32)
+        self.train_eval_train_test(BlacklistModule, np.float32)
 
     def test_promote_module_fp16_weight(self):
-        self.train_eval_train_test(PromoteModule, torch.float16)
+        self.train_eval_train_test(PromoteModule, np.float16)
 
     def test_promote_module_fp32_weight(self):
-        self.train_eval_train_test(PromoteModule, torch.float32)
+        self.train_eval_train_test(PromoteModule, np.float32)
 
 
 if __name__ == '__main__':
