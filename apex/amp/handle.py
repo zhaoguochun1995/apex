@@ -1,7 +1,24 @@
+# Copyright (c) 2020, Huawei Technologies.
+# Copyright (c) 2019, NVIDIA CORPORATION.
+# All rights reserved.
+#
+# Licensed under the BSD 3-Clause License  (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# https://opensource.org/licenses/BSD-3-Clause
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import contextlib
 import warnings
 import sys
 import torch
+import torch_npu
 
 from . import utils
 from .opt import OptimWrapper
@@ -110,6 +127,11 @@ def scale_loss(loss,
                 if not optimizer._amp_stash.params_have_scaled_gradients:
                     optimizer._prepare_amp_backward()
 
+    is_support_inf_nan = hasattr(
+        torch_npu.npu.utils, 'is_support_inf_nan') and torch_npu.npu.utils.is_support_inf_nan()
+    if loss_scaler.dynamic and not is_support_inf_nan:
+        torch_npu.npu.clear_npu_overflow_flag()
+
     yield (loss.float())*loss_scale
 
     if delay_unscale:
@@ -119,6 +141,7 @@ def scale_loss(loss,
         # FusedSGD may take care of unscaling as part of their step() methods.
         # if not isinstance(optimizers, FP16_Optimizer_for_fused):
             loss_scaler.clear_overflow_state()
+            loss_scaler.check_overflow_and_sync()
             for optimizer in optimizers:
                 optimizer._post_amp_backward(loss_scaler)
                 optimizer._amp_stash.params_have_scaled_gradients = False
@@ -142,8 +165,12 @@ def scale_loss(loss,
                                 # Maybe skip should delegate to a method owned by the optimizers themselves.
                                 if hasattr(opt._amp_stash, "all_fp32_from_fp16_params"):
                                     # Clear the master grads that wouldn't be zeroed by model.zero_grad()
-                                    for param in opt._amp_stash.all_fp32_from_fp16_params:
-                                        param.grad = None
+                                    if opt.accelerate or opt.is_npu_fused_optimizer:
+                                        if opt._amp_stash.main_fp32_from_fp16_grad_combine is not None:
+                                            opt._amp_stash.main_fp32_from_fp16_grad_combine.zero_()
+                                    else:
+                                        for param in opt._amp_stash.all_fp32_from_fp16_params:
+                                            param.grad = None
                                 if hasattr(opt, "most_recent_scale"):
                                     opt.most_recent_scale = 1.0
                                     opt.scale_set_by_backward = False

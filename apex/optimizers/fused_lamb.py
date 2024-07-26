@@ -54,10 +54,6 @@ class FusedLAMB(torch.optim.Optimizer):
         use_nvlamb (boolean, optional): Apply adaptive learning rate to 0.0
             weight decay parameter (default: False)
 
-    .. _Large Batch Optimization for Deep Learning - Training BERT in 76 minutes:
-        https://arxiv.org/abs/1904.00962
-    .. _On the Convergence of Adam and Beyond:
-        https://openreview.net/forum?id=ryQu7f-RZ
     """
 
     def __init__(self, params, lr=1e-3, bias_correction=True,

@@ -30,7 +30,6 @@ class FusedNovoGrad(torch.optim.Optimizer):
     In general, ``opt_level="O1"`` is recommended.
 
     It has been proposed in `Jasper: An End-to-End Convolutional Neural Acoustic Model`_.
-    More info: https://nvidia.github.io/OpenSeq2Seq/html/optimizers.html#novograd
 
     Arguments:
         params (iterable): iterable of parameters to optimize or dicts defining
@@ -58,10 +57,6 @@ class FusedNovoGrad(torch.optim.Optimizer):
         set_grad_none (bool, optional): whether set grad to None when zero_grad()
             method is called. (default: True)
 
-    .. _Jasper - An End-to-End Convolutional Neural Acoustic Model:
-        https://arxiv.org/abs/1904.03288
-    .. _On the Convergence of Adam and Beyond:
-        https://openreview.net/forum?id=ryQu7f-RZ
     """
 
     def __init__(self, params, lr=1e-3, bias_correction=True,

@@ -48,7 +48,6 @@ class FusedSGD(Optimizer):
         >>> loss_fn(model(input), target).backward()
         >>> optimizer.step()
 
-    __ http://www.cs.toronto.edu/%7Ehinton/absps/momentum.pdf
 
     .. note::
         The implementation of SGD with Momentum/Nesterov subtly differs from

@@ -1,5 +1,5 @@
 import unittest
-
+import sys
 import torch
 from torch import nn
 from torch.nn import Parameter
@@ -8,12 +8,14 @@ from apex import amp
 from apex.parallel.LARC import LARC
 from utils import common_init
 
+sys.path.append('../')
+import device
 
 class MyModel(torch.nn.Module):
     def __init__(self, unique):
         super(MyModel, self).__init__()
         self.weight0 = Parameter(
-            unique + torch.arange(2, device="cuda", dtype=torch.float32)
+            unique + torch.arange(2, device=device.CALCULATE_DEVICE, dtype=torch.float32)
         )
 
     def forward(self, input):
@@ -22,7 +24,7 @@ class MyModel(torch.nn.Module):
 
 class TestLARC(unittest.TestCase):
     def setUp(self):
-        self.x = torch.ones((2), device="cuda", dtype=torch.float32)
+        self.x = torch.ones((2), device=device.CALCULATE_DEVICE, dtype=torch.float32)
         common_init(self)
 
     def tearDown(self):
@@ -39,7 +41,7 @@ class TestLARC(unittest.TestCase):
             )
 
             model, optimizer = amp.initialize(
-                model, optimizer, opt_level=opt_level, verbosity=0
+                model, optimizer, opt_level=opt_level, loss_scale=1024, verbosity=0
             )
 
             optimizer.zero_grad()
